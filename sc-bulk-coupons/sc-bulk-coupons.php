@@ -107,10 +107,10 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 							</td>
 						</tr>
 						<tr>
-							<th scope="row"><label for="scbg_price_ids">Product IDs</label></th>
+							<th scope="row"><label for="scbg_product_ids">Product IDs</label></th>
 							<td>
-								<input type="text" id="scbg_price_ids" name="price_ids" class="regular-text" placeholder="price_id1, price_id2" />
-								<p class="description">Comma-separated SureCart <strong>Product</strong> IDs to restrict this coupon to.</p>
+								<input type="text" id="scbg_product_ids" name="product_ids" class="regular-text" placeholder="prod_abc123, prod_xyz789" />
+								<p class="description">Enter SureCart <strong>Product</strong> IDs (e.g. <code>prod_abc123</code>), comma-separated.</p>
 							</td>
 						</tr>
 						<tr>
@@ -285,8 +285,14 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 			}
 
 			$campaign            = isset( $_POST['campaign'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign'] ) ) : '';
-			$price_ids_input     = isset( $_POST['price_ids'] ) ? sanitize_text_field( wp_unslash( $_POST['price_ids'] ) ) : '';
-			$price_ids           = array_filter( array_map( 'trim', explode( ',', $price_ids_input ) ) );
+
+			// NEW: Read Product IDs directly from POST (no API mapping).
+			$product_ids_input   = isset( $_POST['product_ids'] ) ? sanitize_text_field( wp_unslash( $_POST['product_ids'] ) ) : '';
+			$product_ids         = array_values( array_unique( array_filter( array_map( function( $id ) {
+				$id = trim( $id );
+				// allow letters, digits, underscore, hyphen
+				return preg_replace( '/[^A-Za-z0-9_-]/', '', $id );
+			}, explode( ',', $product_ids_input ) ) ) ) );
 
 			$discount_type       = isset( $_POST['discount_type'] ) ? sanitize_text_field( wp_unslash( $_POST['discount_type'] ) ) : 'percent';
 			$discount_value_raw  = isset( $_POST['discount_value'] ) ? trim( wp_unslash( $_POST['discount_value'] ) ) : '';
@@ -353,19 +359,6 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 
 			$min_subtotal_cents = '' !== $min_subtotal_raw ? (int) round( floatval( $min_subtotal_raw ) * 100 ) : null;
 			$coupon_redeem_by   = '' !== $end_date_raw ? (int) strtotime( $end_date_raw . ' UTC' ) : null;
-
-			// Map price IDs -> product IDs (API only supports product restrictions).
-			$product_ids = [];
-			foreach ( $price_ids as $pid ) {
-				$price_obj = $this->api_get( 'https://api.surecart.com/v1/prices/' . rawurlencode( $pid ), $api_key );
-				if ( is_wp_error( $price_obj ) ) {
-					continue; // ignore invalid price id
-				}
-				if ( isset( $price_obj['product_id'] ) ) {
-					$product_ids[] = $price_obj['product_id'];
-				}
-			}
-			$product_ids = array_values( array_unique( $product_ids ) );
 
 			// 1) Create the COUPON (one per campaign)
 			$coupon_payload = [
@@ -533,8 +526,6 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 new RUP_SCBG_Bulk_Coupon_Generator();
 
 
-
-
 // ──────────────────────────────────────────────────────────────────────────
 //  Updater bootstrap (plugins_loaded priority 1):
 // ──────────────────────────────────────────────────────────────────────────
@@ -558,13 +549,10 @@ add_action( 'plugins_loaded', function() {
 }, 20 );
 
 // MainWP Icon Filter
-
 add_filter('mainwp_child_stats_get_plugin_info', function($info, $slug) {
-
     if ('sc-bulk-coupons/sc-bulk-coupons.php' === $slug) {
         $info['icon'] = 'https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/icon-128.png'; // Supported types: jpeg, jpg, gif, ico, png
     }
-
     return $info;
-
 }, 10, 2);
+
