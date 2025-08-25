@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name:       SureCart Bulk Coupons 
+ * Plugin Name:       SureCart Bulk Coupons
  * Description:       A plugin to generate bulk surecart coupons with many options
  * Tested up to:      6.8.2
  * Requires at least: 6.5

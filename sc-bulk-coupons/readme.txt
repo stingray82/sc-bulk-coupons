@@ -1,0 +1,31 @@
+=== SureCart Bulk Coupons Generator ===
+Contributors: reallyusefulplugins
+Donate link: https://reallyusefulplugins.com/donate
+Tags: Bulk Coupons, Sure Cart, Coupons
+Requires at least: 6.5
+Tested up to: 6.8.2
+Stable tag: 0.9
+Requires PHP: 8.0
+License: GPL-2.0-or-later
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
+
+SureCart Bulk Coupon Generator - Generate Coupons in Bulk for SureCart
+
+
+== Description ==
+SureCart Bulk Coupon Generator - Generate Coupons in Bulk for SureCart
+
+== Installation ==
+
+1. Upload the `sc- bulk-coupons` folder to the `/wp-content/plugins/` directory.
+2. Activate the plugin through the 'Plugins' menu in WordPress.
+3. Its now ready to use
+
+== Frequently Asked Questions ==
+
+= How do I add use the plugin? =
+Navigate to tools and surecart bulk coupons and fill out the required fields 
+
+== Changelog ==
+= 0.9 August 2025 =
+New: Initial Release
