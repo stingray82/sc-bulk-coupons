@@ -5,7 +5,7 @@
  * Tested up to:      6.8.2
  * Requires at least: 6.5
  * Requires PHP:      8.0
- * Version:           1.0
+ * Version:           1.1
  * Author:            reallyusefulplugins.com
  * Author URI:        https://reallyusefulplugins.com
  * License:           GPL2
@@ -21,7 +21,7 @@ if ( ! defined('ABSPATH') ) {
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 // Define plugin constants
-define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.0');
+define('RUP_SC_SC_BULK_COUPONS_VERSION', '0.9');
 define('RUP_SC_SC_BULK_COUPONS_SLUG', 'sc-bulk-coupons'); // Replace with your unique slug if needed
 define('RUP_SC_SC_BULK_COUPONS_MAIN_FILE', __FILE__);
 define('RUP_SC_SC_BULK_COUPONS_DIR', plugin_dir_path(__FILE__));
@@ -33,13 +33,17 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 	const CSV_PREFIX  = 'surecart-promo-codes-'; // used for naming + clean-up
 	const PRODUCTS_CACHE_KEY = 'scbg_products_cache_v1'; // cache for product list (15 min)
 
+	/** @var string Hook suffix for our submenu page (for targeted enqueues) */
+	private $page_hook = '';
+
 	public function __construct() {
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
 		add_action( 'admin_init', [ $this, 'handle_post' ] );
+		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 	}
 
 	public function add_menu() {
-		add_submenu_page(
+		$this->page_hook = add_submenu_page(
 			'tools.php',
 			'SureCart Bulk Coupons',
 			'SureCart Bulk Coupons',
@@ -47,6 +51,55 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 			self::PAGE_SLUG,
 			[ $this, 'render_page' ]
 		);
+	}
+
+	/**
+	 * Load Select2 only on our admin page and init the products field.
+	 */
+	public function enqueue_admin_assets( $hook ) {
+		if ( empty( $this->page_hook ) || $hook !== $this->page_hook ) {
+			return;
+		}
+
+		// Select2 from jsDelivr (lightweight, no extra deps beyond jQuery which WP already provides)
+		wp_register_style(
+			'scbg-select2',
+			'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css',
+			[],
+			'4.1.0-rc.0'
+		);
+		wp_register_script(
+			'scbg-select2',
+			'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js',
+			[ 'jquery' ],
+			'4.1.0-rc.0',
+			true
+		);
+
+		wp_enqueue_style( 'scbg-select2' );
+		wp_enqueue_script( 'scbg-select2' );
+
+		// Minimal styling so the widget has breathing room in WP tables
+		$css = <<<CSS
+#scbg_product_ids { min-width: 360px; }
+.select2-container { min-width: 360px; }
+CSS;
+		wp_add_inline_style( 'scbg-select2', $css );
+
+		// Initialize Select2 on our multi-select
+		$init = <<<JS
+jQuery(function($){
+  var \$el = $('#scbg_product_ids');
+  if (!\$el.length || !$.fn.select2) return;
+  \$el.select2({
+    width: 'resolve',
+    placeholder: 'Select one or more products…',
+    allowClear: true,
+    closeOnSelect: false
+  });
+});
+JS;
+		wp_add_inline_script( 'scbg-select2', $init );
 	}
 
 	private function get_api_key() {
@@ -184,11 +237,17 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 							</td>
 						</tr>
 
-						<!-- Products multi-select populated from API -->
+						<!-- Products multi-select populated from API + Select2 -->
 						<tr>
 							<th scope="row"><label for="scbg_product_ids">Products</label></th>
 							<td>
-								<select id="scbg_product_ids" name="product_ids[]" multiple size="8" style="min-width:360px;">
+								<select
+									id="scbg_product_ids"
+									name="product_ids[]"
+									multiple
+									size="8"
+									data-placeholder="Select one or more products…"
+									style="min-width:360px;">
 									<?php if ( empty( $products ) ) : ?>
 										<option value="">(No products found — save API key and click Refresh)</option>
 									<?php else : ?>
@@ -200,7 +259,7 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 									<?php endif; ?>
 								</select>
 								<a href="<?php echo esc_url( $refresh_products_url ); ?>" class="button" style="margin-left:6px;">Refresh products</a>
-								<p class="description">Hold Ctrl/Cmd to select multiple. Friendly names shown; IDs are submitted.</p>
+								<p class="description">Search and multi-select products. Friendly names shown; IDs are submitted.</p>
 							</td>
 						</tr>
 
@@ -377,7 +436,7 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 
 			$campaign = isset( $_POST['campaign'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign'] ) ) : '';
 
-			// NEW: Read Product IDs from multi-select (no manual typing)
+			// Read Product IDs from multi-select (no manual typing)
 			$raw_product_ids = isset( $_POST['product_ids'] ) ? (array) $_POST['product_ids'] : [];
 			$product_ids     = array_values( array_unique( array_filter( array_map( function( $id ) {
 				$id = sanitize_text_field( wp_unslash( $id ) );
