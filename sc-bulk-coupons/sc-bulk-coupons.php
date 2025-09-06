@@ -5,7 +5,7 @@
  * Tested up to:      6.8.2
  * Requires at least: 6.5
  * Requires PHP:      8.0
- * Version:           0.9
+ * Version:           1.0
  * Author:            reallyusefulplugins.com
  * Author URI:        https://reallyusefulplugins.com
  * License:           GPL2
@@ -20,19 +20,18 @@ if ( ! defined('ABSPATH') ) {
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-
 // Define plugin constants
-define('RUP_SC_SC_BULK_COUPONS_VERSION', '0.9');
+define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.0');
 define('RUP_SC_SC_BULK_COUPONS_SLUG', 'sc-bulk-coupons'); // Replace with your unique slug if needed
 define('RUP_SC_SC_BULK_COUPONS_MAIN_FILE', __FILE__);
 define('RUP_SC_SC_BULK_COUPONS_DIR', plugin_dir_path(__FILE__));
 define('RUP_SC_SC_BULK_COUPONS_URL', plugin_dir_url(__FILE__));
 
-
 class RUP_SCBG_Bulk_Coupon_Generator {
 	const OPTION_KEY  = 'scbg_api_key';
 	const PAGE_SLUG   = 'scbg-bulk-coupons';
 	const CSV_PREFIX  = 'surecart-promo-codes-'; // used for naming + clean-up
+	const PRODUCTS_CACHE_KEY = 'scbg_products_cache_v1'; // cache for product list (15 min)
 
 	public function __construct() {
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
@@ -55,12 +54,90 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 		return is_string( $key ) ? trim( $key ) : '';
 	}
 
+	/**
+	 * Fetch products from SureCart API, cached for 15 minutes.
+	 *
+	 * @param bool $force_refresh Force refresh, bypassing cache.
+	 * @return array[] Each: ['id' => 'prod_xxx', 'name' => 'Product Name', 'archived' => bool]
+	 */
+	private function fetch_products_from_api( $force_refresh = false ) {
+		$cache_key = self::PRODUCTS_CACHE_KEY;
+
+		if ( ! $force_refresh ) {
+			$cached = get_transient( $cache_key );
+			if ( is_array( $cached ) ) {
+				return $cached;
+			}
+		}
+
+		$api_key = $this->get_api_key();
+		if ( empty( $api_key ) ) {
+			return [];
+		}
+
+		$out   = [];
+		$page  = 1;
+		$limit = 100;
+
+		while ( true ) {
+			$url = add_query_arg(
+				[
+					'limit' => $limit,
+					'page'  => $page,
+				],
+				'https://api.surecart.com/v1/products'
+			);
+
+			$res = $this->api_get( $url, $api_key );
+			if ( is_wp_error( $res ) ) { break; }
+
+			$items = $res['data'] ?? ( is_array( $res ) ? $res : [] );
+			if ( empty( $items ) ) { break; }
+
+			foreach ( $items as $p ) {
+				$out[] = [
+					'id'       => $p['id']   ?? '',
+					'name'     => $p['name'] ?? '(no name)',
+					'archived' => ! empty( $p['archived'] ),
+				];
+			}
+
+			$pg = $res['pagination'] ?? null;
+			if ( is_array( $pg ) ) {
+				$total = (int) ( $pg['count'] ?? 0 );
+				$lim   = (int) ( $pg['limit'] ?? $limit );
+				$cur   = (int) ( $pg['page']  ?? $page );
+				if ( $total <= $lim * $cur ) { break; }
+				$page++;
+			} else {
+				if ( count( $items ) < $limit ) { break; }
+				$page++;
+			}
+		}
+
+		set_transient( $cache_key, $out, 15 * MINUTE_IN_SECONDS );
+		return $out;
+	}
+
 	public function render_page() {
 		if ( ! current_user_can( 'manage_options' ) ) { return; }
 
 		$api_key      = $this->get_api_key();
 		$csv_url      = isset( $_GET['scbg_csv'] ) ? esc_url_raw( $_GET['scbg_csv'] ) : '';
 		$last_message = isset( $_GET['scbg_msg'] ) ? sanitize_text_field( wp_unslash( $_GET['scbg_msg'] ) ) : '';
+
+		// Optional: allow manual refresh of product cache via button
+		if ( isset( $_GET['scbg_refresh_products'] ) && wp_verify_nonce( $_GET['_wpnonce'] ?? '', 'scbg_refresh_products' ) ) {
+			delete_transient( self::PRODUCTS_CACHE_KEY );
+			$last_message = 'Products refreshed.';
+		}
+
+		$products = $this->fetch_products_from_api( false );
+		$refresh_products_url = wp_nonce_url(
+			add_query_arg( [ 'page' => self::PAGE_SLUG, 'scbg_refresh_products' => 1 ], admin_url( 'tools.php' ) ),
+			'scbg_refresh_products'
+		);
+
 		?>
 		<div class="wrap">
 			<h1>SureCart Coupon Bulk Generator</h1>
@@ -106,13 +183,27 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 								<p class="description">Saved as the coupon name so you can recognize the campaign in SureCart.</p>
 							</td>
 						</tr>
+
+						<!-- Products multi-select populated from API -->
 						<tr>
-							<th scope="row"><label for="scbg_product_ids">Product IDs</label></th>
+							<th scope="row"><label for="scbg_product_ids">Products</label></th>
 							<td>
-								<input type="text" id="scbg_product_ids" name="product_ids" class="regular-text" placeholder="prod_abc123, prod_xyz789" />
-								<p class="description">Enter SureCart <strong>Product</strong> IDs (e.g. <code>prod_abc123</code>), comma-separated.</p>
+								<select id="scbg_product_ids" name="product_ids[]" multiple size="8" style="min-width:360px;">
+									<?php if ( empty( $products ) ) : ?>
+										<option value="">(No products found — save API key and click Refresh)</option>
+									<?php else : ?>
+										<?php foreach ( $products as $p ) : ?>
+											<option value="<?php echo esc_attr( $p['id'] ); ?>">
+												<?php echo esc_html( $p['name'] . ( ! empty( $p['archived'] ) ? ' (archived)' : '' ) ); ?>
+											</option>
+										<?php endforeach; ?>
+									<?php endif; ?>
+								</select>
+								<a href="<?php echo esc_url( $refresh_products_url ); ?>" class="button" style="margin-left:6px;">Refresh products</a>
+								<p class="description">Hold Ctrl/Cmd to select multiple. Friendly names shown; IDs are submitted.</p>
 							</td>
 						</tr>
+
 						<tr>
 							<th scope="row">Discount Type</th>
 							<td>
@@ -284,15 +375,15 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 				wp_die( esc_html__( 'Please save your SureCart API token first.', 'scbg' ) );
 			}
 
-			$campaign            = isset( $_POST['campaign'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign'] ) ) : '';
+			$campaign = isset( $_POST['campaign'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign'] ) ) : '';
 
-			// NEW: Read Product IDs directly from POST (no API mapping).
-			$product_ids_input   = isset( $_POST['product_ids'] ) ? sanitize_text_field( wp_unslash( $_POST['product_ids'] ) ) : '';
-			$product_ids         = array_values( array_unique( array_filter( array_map( function( $id ) {
-				$id = trim( $id );
+			// NEW: Read Product IDs from multi-select (no manual typing)
+			$raw_product_ids = isset( $_POST['product_ids'] ) ? (array) $_POST['product_ids'] : [];
+			$product_ids     = array_values( array_unique( array_filter( array_map( function( $id ) {
+				$id = sanitize_text_field( wp_unslash( $id ) );
 				// allow letters, digits, underscore, hyphen
 				return preg_replace( '/[^A-Za-z0-9_-]/', '', $id );
-			}, explode( ',', $product_ids_input ) ) ) ) );
+			}, $raw_product_ids ) ) ) );
 
 			$discount_type       = isset( $_POST['discount_type'] ) ? sanitize_text_field( wp_unslash( $_POST['discount_type'] ) ) : 'percent';
 			$discount_value_raw  = isset( $_POST['discount_value'] ) ? trim( wp_unslash( $_POST['discount_value'] ) ) : '';
@@ -400,7 +491,7 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 
 				$promotion_payload = [
 					'coupon_id'            => $coupon_id,
-					'code'                 => $code,					
+					'code'                 => $code,
 					'max_redemptions'      => $usage_limit,
 				];
 				$promotion_payload = array_filter( $promotion_payload, static function( $v ) { return ! is_null( $v ); } );
@@ -525,7 +616,6 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 
 new RUP_SCBG_Bulk_Coupon_Generator();
 
-
 // ──────────────────────────────────────────────────────────────────────────
 //  Updater bootstrap (plugins_loaded priority 1):
 // ──────────────────────────────────────────────────────────────────────────
@@ -538,9 +628,9 @@ add_action( 'plugins_loaded', function() {
     $updater_config = [
         'plugin_file' => plugin_basename(__FILE__),             // e.g. "simply-static-export-notify/simply-static-export-notify.php"
         'slug'        => RUP_SC_SC_BULK_COUPONS_SLUG,           // must match your updater‐server slug
-        'name'        => 'SureCart Bulk Coupons',         // human‐readable plugin name
-        'version'     => RUP_SC_SC_BULK_COUPONS_VERSION, // same as the VERSION constant above
-        'key'         => '',                 // your secret key for private updater
+        'name'        => 'SureCart Bulk Coupons',               // human‐readable plugin name
+        'version'     => RUP_SC_SC_BULK_COUPONS_VERSION,        // same as the VERSION constant above
+        'key'         => '',                                    // your secret key for private updater
         'server'      => 'https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/index.json',
     ];
 
@@ -555,4 +645,3 @@ add_filter('mainwp_child_stats_get_plugin_info', function($info, $slug) {
     }
     return $info;
 }, 10, 2);
-
