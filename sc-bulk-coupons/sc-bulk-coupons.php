@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       SureCart Bulk Coupons
  * Description:       A plugin to generate bulk surecart coupons with many options
- * Tested up to:      6.8.2
+ * Tested up to:      6.8.3
  * Requires at least: 6.5
  * Requires PHP:      8.0
  * Version:           1.2
@@ -21,7 +21,7 @@ if ( ! defined('ABSPATH') ) {
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 // Define plugin constants
-define('RUP_SC_SC_BULK_COUPONS_VERSION', '0.9');
+define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.2');
 define('RUP_SC_SC_BULK_COUPONS_SLUG', 'sc-bulk-coupons'); // Replace with your unique slug if needed
 define('RUP_SC_SC_BULK_COUPONS_MAIN_FILE', __FILE__);
 define('RUP_SC_SC_BULK_COUPONS_DIR', plugin_dir_path(__FILE__));

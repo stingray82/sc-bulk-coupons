@@ -1,19 +1,19 @@
 {
     "slug": "sc-bulk-coupons",
     "name": "SureCart Bulk Coupons",
-    "version": "1.0",
+    "version": "1.2",
     "author": "reallyusefulplugins.com",
     "author_homepage": "https://reallyusefulplugins.com",
     "requires_php": "8.0",
     "requires": "6.5",
-    "tested": "6.8.2",
+    "tested": "6.8.3",
     "sections": {
         "description": "SureCart Bulk Coupon Generator - Generate Coupons in Bulk for SureCart",
         "installation": "1. Upload the `sc- bulk-coupons` folder to the `/wp-content/plugins/` directory.<br />\r\n2. Activate the plugin through the 'Plugins' menu in WordPress.<br />\r\n3. Its now ready to use",
         "frequently_asked_questions": "= How do I add use the plugin? =<br />\r\nNavigate to tools and surecart bulk coupons and fill out the required fields",
-        "changelog": "<h4>1.0 September 2025</h4><ul><li>New: New Queries API for Products</li><li>New: Supports Multi-Select</li></ul><h4>0.9 August 2025</h4><ul><li>New: Initial Release</li></ul>"
+        "changelog": "<h4>1.2 October 2025</h4><ul><li>New Product Selector updates</li><li>New CSV output, Coupons Only or Both and original full</li></ul><h4>1.1.1 September 2025</h4><ul><li>Fixed: Minimum Order Subtotal</li></ul><h4>1.1 September 2025</h4><ul><li>New: Select 2 - Multiselect</li><li>New: Saves generation details</li><li>New: Reset Button</li></ul><h4>1.0 September 2025</h4><ul><li>New: New Queries API for Products</li><li>New: Supports Multi-Select</li></ul><h4>0.9 August 2025</h4><ul><li>New: Initial Release</li></ul>"
     },
-    "last_updated": "2025-09-06 08:45:44",
+    "last_updated": "2025-11-01 23:27:39",
     "download_url": "https://github.com/stingray82/sc-bulk-coupons/releases/latest/download/sc-bulk-coupons.zip",
     "banners": {
         "low": "https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/banner-772x250.png",
