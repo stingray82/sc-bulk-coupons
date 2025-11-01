@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name:       SureCart Bulk Coupons
- * Description:       A plugin to generate bulk surecart coupons with many options
- * Tested up to:      6.8.3
+ * Description:       Generate bulk SureCart coupons & promotion codes — or attach codes to an existing coupon.
+ * Tested up to:      6.8.2
  * Requires at least: 6.5
  * Requires PHP:      8.0
- * Version:           1.2
+ * Version:           1.3.0
  * Author:            reallyusefulplugins.com
  * Author URI:        https://reallyusefulplugins.com
  * License:           GPL2
@@ -14,24 +14,21 @@
  * Website:           https://reallyusefulplugins.com
  */
 
-if ( ! defined('ABSPATH') ) {
-    exit; // Prevent direct access
-}
-
-if ( ! defined( 'ABSPATH' ) ) { exit; }
+if ( ! defined('ABSPATH') ) { exit; }
 
 // Define plugin constants
-define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.2');
-define('RUP_SC_SC_BULK_COUPONS_SLUG', 'sc-bulk-coupons'); // Replace with your unique slug if needed
+define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.3.0');
+define('RUP_SC_SC_BULK_COUPONS_SLUG', 'sc-bulk-coupons');
 define('RUP_SC_SC_BULK_COUPONS_MAIN_FILE', __FILE__);
 define('RUP_SC_SC_BULK_COUPONS_DIR', plugin_dir_path(__FILE__));
 define('RUP_SC_SC_BULK_COUPONS_URL', plugin_dir_url(__FILE__));
 
 class RUP_SCBG_Bulk_Coupon_Generator {
-	const OPTION_KEY  = 'scbg_api_key';
-	const PAGE_SLUG   = 'scbg-bulk-coupons';
-	const CSV_PREFIX  = 'surecart-promo-codes-'; // used for naming + clean-up
-	const PRODUCTS_CACHE_KEY = 'scbg_products_cache_v1'; // cache for product list (15 min)
+	const OPTION_KEY          = 'scbg_api_key';
+	const PAGE_SLUG           = 'scbg-bulk-coupons';
+	const CSV_PREFIX          = 'surecart-promo-codes-'; // used for naming + clean-up
+	const PRODUCTS_CACHE_KEY  = 'scbg_products_cache_v1'; // 15 min
+	const COUPONS_CACHE_KEY   = 'scbg_coupons_cache_v1';  // 10 min
 
 	/** @var string Hook suffix for our submenu page (for targeted enqueues) */
 	private $page_hook = '';
@@ -54,14 +51,14 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 	}
 
 	/**
-	 * Load Select2 only on our admin page and init the products field.
+	 * Load Select2 only on our admin page and init the selects.
 	 */
 	public function enqueue_admin_assets( $hook ) {
 		if ( empty( $this->page_hook ) || $hook !== $this->page_hook ) {
 			return;
 		}
 
-		// Select2 from jsDelivr (lightweight, no extra deps beyond jQuery which WP already provides)
+		// Select2 from jsDelivr (WordPress provides jQuery already)
 		wp_register_style(
 			'scbg-select2',
 			'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css',
@@ -79,24 +76,45 @@ class RUP_SCBG_Bulk_Coupon_Generator {
 		wp_enqueue_style( 'scbg-select2' );
 		wp_enqueue_script( 'scbg-select2' );
 
-		// Minimal styling so the widget has breathing room in WP tables
 		$css = <<<CSS
 #scbg_product_ids { min-width: 360px; }
+#scbg_coupon_id  { min-width: 360px; }
 .select2-container { min-width: 360px; }
 CSS;
 		wp_add_inline_style( 'scbg-select2', $css );
 
-		// Initialize Select2 on our multi-select
 		$init = <<<JS
 jQuery(function($){
-  var \$el = $('#scbg_product_ids');
-  if (!\$el.length || !$.fn.select2) return;
-  \$el.select2({
-    width: 'resolve',
-    placeholder: 'Select one or more products…',
-    allowClear: true,
-    closeOnSelect: false
-  });
+  var \$products = $('#scbg_product_ids');
+  if (\$products.length && $.fn.select2) {
+    \$products.select2({
+      width: 'resolve',
+      placeholder: 'Select one or more products…',
+      allowClear: true,
+      closeOnSelect: false
+    });
+  }
+  var \$coupon = $('#scbg_coupon_id');
+  if (\$coupon.length && $.fn.select2) {
+    \$coupon.select2({
+      width: 'resolve',
+      placeholder: 'Select an existing coupon…',
+      allowClear: true
+    });
+  }
+
+  // Toggle fields by coupon mode
+  function syncCouponMode(){
+    var mode = $('input[name="coupon_mode"]:checked').val();
+    var isExisting = (mode === 'existing');
+    // New-coupon-only rows/fields are hidden when using an existing coupon
+    $('.scbg-new-coupon-row').toggle(!isExisting);
+    $('.scbg-new-coupon-only').prop('disabled', isExisting);
+    $('#scbg_coupon_row').toggle(isExisting);
+    $('#scbg_promo_options_row').toggle(true); // promo options always available
+  }
+  $(document).on('change','input[name="coupon_mode"]', syncCouponMode);
+  syncCouponMode();
 });
 JS;
 		wp_add_inline_script( 'scbg-select2', $init );
@@ -172,6 +190,66 @@ JS;
 		return $out;
 	}
 
+	/**
+	 * Fetch coupons from SureCart API, cached for 10 minutes.
+	 * @return array[] Each: ['id','name','percent','amount','currency']
+	 */
+	private function fetch_coupons_from_api( $force_refresh = false ) {
+		$cache_key = self::COUPONS_CACHE_KEY;
+
+		if ( ! $force_refresh ) {
+			$cached = get_transient( $cache_key );
+			if ( is_array( $cached ) ) {
+				return $cached;
+			}
+		}
+
+		$api_key = $this->get_api_key();
+		if ( empty( $api_key ) ) { return []; }
+
+		$out   = [];
+		$page  = 1;
+		$limit = 100;
+
+		while ( true ) {
+			$url = add_query_arg(
+				[ 'limit' => $limit, 'page' => $page ],
+				'https://api.surecart.com/v1/coupons'
+			);
+
+			$res = $this->api_get( $url, $api_key );
+			if ( is_wp_error( $res ) ) { break; }
+
+			$items = $res['data'] ?? ( is_array( $res ) ? $res : [] );
+			if ( empty( $items ) ) { break; }
+
+			foreach ( $items as $c ) {
+				$out[] = [
+					'id'       => $c['id'] ?? '',
+					'name'     => $c['name'] ?? '(no name)',
+					'percent'  => isset( $c['percent_off'] ) ? (int) $c['percent_off'] : null,
+					'amount'   => isset( $c['amount_off'] ) ? (int) $c['amount_off'] : null, // cents
+					'currency' => $c['currency'] ?? '',
+				];
+			}
+
+			$pg = $res['pagination'] ?? null;
+			if ( is_array( $pg ) ) {
+				$total = (int) ( $pg['count'] ?? 0 );
+				$lim   = (int) ( $pg['limit'] ?? $limit );
+				$cur   = (int) ( $pg['page']  ?? $page );
+				if ( $total <= $lim * $cur ) { break; }
+				$page++;
+			} else {
+				if ( count( $items ) < $limit ) { break; }
+				$page++;
+			}
+		}
+
+		set_transient( $cache_key, $out, 10 * MINUTE_IN_SECONDS );
+		return $out;
+	}
+
 	public function render_page() {
 		if ( ! current_user_can( 'manage_options' ) ) { return; }
 
@@ -184,11 +262,22 @@ JS;
 			delete_transient( self::PRODUCTS_CACHE_KEY );
 			$last_message = 'Products refreshed.';
 		}
+		// Clear coupons cache
+		if ( isset( $_GET['scbg_refresh_coupons'] ) && wp_verify_nonce( $_GET['_wpnonce'] ?? '', 'scbg_refresh_coupons' ) ) {
+			delete_transient( self::COUPONS_CACHE_KEY );
+			$last_message = 'Coupons refreshed.';
+		}
 
 		$products = $this->fetch_products_from_api( false );
+		$coupons  = $this->fetch_coupons_from_api( false );
+
 		$refresh_products_url = wp_nonce_url(
 			add_query_arg( [ 'page' => self::PAGE_SLUG, 'scbg_refresh_products' => 1 ], admin_url( 'tools.php' ) ),
 			'scbg_refresh_products'
+		);
+		$refresh_coupons_url = wp_nonce_url(
+			add_query_arg( [ 'page' => self::PAGE_SLUG, 'scbg_refresh_coupons' => 1 ], admin_url( 'tools.php' ) ),
+			'scbg_refresh_coupons'
 		);
 
 		?>
@@ -236,7 +325,6 @@ JS;
 			                   class="button <?php echo $link['primary'] ? 'button-primary' : ''; ?>"
 			                   style="<?php echo $i ? 'margin-left:6px' : ''; ?>">
 			                    <?php
-			                    // Show filename when available.
 			                    $basename = basename( parse_url( $link['url'], PHP_URL_PATH ) );
 			                    echo esc_html( $link['label'] . ( $basename ? ' ' . $basename : '' ) );
 			                    ?>
@@ -260,31 +348,62 @@ JS;
 							</td>
 						</tr>
 					</tbody>
-				</table>		
+				</table>
 				<p><button type="submit" name="scbg_action" value="save_key" class="button button-secondary">Save API Key</button></p>
 			</form>
 
 			<hr />
 
-			<h2 class="title">Generate Coupons & Promotion Codes</h2>
+			<h2 class="title">Generate Coupons &amp; Promotion Codes</h2>
 			<form method="post" action="<?php echo esc_url( admin_url( 'tools.php?page=' . self::PAGE_SLUG ) ); ?>">
 				<?php wp_nonce_field( 'scbg_generate', 'scbg_nonce_generate' ); ?>
 				<table class="form-table" role="presentation">
 					<tbody>
+
 						<tr>
+							<th scope="row">Coupon mode</th>
+							<td>
+								<label><input type="radio" name="coupon_mode" value="new" checked /> Create new coupon</label>
+								&nbsp;&nbsp;
+								<label><input type="radio" name="coupon_mode" value="existing" /> Use existing coupon</label>
+								<p class="description">Choose an existing coupon to attach the generated promotion codes to, or create a brand new coupon.</p>
+							</td>
+						</tr>
+
+						<tr id="scbg_coupon_row" style="display:none;">
+							<th scope="row"><label for="scbg_coupon_id">Coupon</label></th>
+							<td>
+								<select id="scbg_coupon_id" name="coupon_id" data-placeholder="Select an existing coupon…">
+									<option value=""></option>
+									<?php foreach ( $coupons as $c ) :
+										$label = $c['name'] . ' — ' .
+										         ( $c['percent'] !== null ? ( $c['percent'] . '% off' )
+											  : ( $c['amount'] !== null ? number_format( $c['amount']/100, 2 ) . ' ' . strtoupper( $c['currency'] ) . ' off' : '—' ) )
+										         . ' (' . $c['id'] . ')';
+									?>
+										<option value="<?php echo esc_attr( $c['id'] ); ?>"><?php echo esc_html( $label ); ?></option>
+									<?php endforeach; ?>
+								</select>
+								<a href="<?php echo esc_url( $refresh_coupons_url ); ?>" class="button" style="margin-left:6px;">Clear cache &amp; reload</a>
+								<p class="description">When “Use existing coupon” is selected, all codes will be created as promotions for this coupon.</p>
+							</td>
+						</tr>
+
+						<tr class="scbg-new-coupon-row">
 							<th scope="row"><label for="scbg_campaign">Campaign (friendly name)</label></th>
 							<td>
-								<input type="text" id="scbg_campaign" name="campaign" class="regular-text" placeholder="e.g. AppSumo August 2025" required />
+								<input type="text" id="scbg_campaign" name="campaign" class="regular-text scbg-new-coupon-only" placeholder="e.g. AppSumo August 2025" />
 								<p class="description">Saved as the coupon name so you can recognize the campaign in SureCart.</p>
 							</td>
 						</tr>
 
-						<!-- Products multi-select populated from API + Select2 -->
-						<tr>
+						<!-- Products (new coupon only) -->
+						<tr class="scbg-new-coupon-row">
 							<th scope="row"><label for="scbg_product_ids">Products</label></th>
 							<td>
 								<select
 									id="scbg_product_ids"
+									class="scbg-new-coupon-only"
 									name="product_ids[]"
 									multiple
 									size="8"
@@ -305,37 +424,39 @@ JS;
 							</td>
 						</tr>
 
-						<tr>
+						<tr class="scbg-new-coupon-row">
 							<th scope="row">Discount Type</th>
 							<td>
 								<fieldset>
-									<label><input type="radio" name="discount_type" value="percent" checked /> Percent Off</label>
+									<label><input class="scbg-new-coupon-only" type="radio" name="discount_type" value="percent" checked /> Percent Off</label>
 									&nbsp;&nbsp;
-									<label><input type="radio" name="discount_type" value="amount" /> Fixed Amount Off</label>
+									<label><input class="scbg-new-coupon-only" type="radio" name="discount_type" value="amount" /> Fixed Amount Off</label>
 								</fieldset>
 								<p class="description">Choose <em>Percent Off</em> (e.g., 100 for 100% free) or <em>Fixed Amount</em> (e.g., 10.00).</p>
 							</td>
 						</tr>
-						<tr>
+						<tr class="scbg-new-coupon-row">
 							<th scope="row"><label for="scbg_discount_value">Discount Value</label></th>
 							<td>
-								<input type="text" id="scbg_discount_value" name="discount_value" class="regular-text" placeholder="e.g. 100 or 10.00" required />
+								<input type="text" id="scbg_discount_value" name="discount_value" class="regular-text scbg-new-coupon-only" placeholder="e.g. 100 or 10.00" />
 							</td>
 						</tr>
-						<tr class="scbg-currency-row">
+						<tr class="scbg-new-coupon-row scbg-currency-row">
 							<th scope="row"><label for="scbg_currency">Currency (for fixed amount)</label></th>
 							<td>
-								<input type="text" id="scbg_currency" name="currency" class="regular-text" placeholder="e.g. usd" />
+								<input type="text" id="scbg_currency" name="currency" class="regular-text scbg-new-coupon-only" placeholder="e.g. usd" />
 								<p class="description">3-letter ISO currency (only needed for Fixed Amount Off).</p>
 							</td>
 						</tr>
+
 						<tr>
 							<th scope="row"><label for="scbg_count">Number of Promotion Codes</label></th>
 							<td>
 								<input type="number" id="scbg_count" name="count" min="1" max="1000" value="100" required />
-								<p class="description">How many unique <em>codes</em> to create (max 1000 per run). All codes reference the single coupon created for this campaign.</p>
+								<p class="description">How many unique <em>codes</em> to create (max 1000 per run). All codes reference the selected/new coupon.</p>
 							</td>
 						</tr>
+
 						<tr>
 							<th scope="row"><label for="scbg_prefix">Code Prefix (optional)</label></th>
 							<td>
@@ -345,7 +466,7 @@ JS;
 						</tr>
 
 						<tr>
-							<th scope="row">Code Pattern & Grouping</th>
+							<th scope="row">Code Pattern &amp; Grouping</th>
 							<td>
 								<p>
 									<label>Pattern:
@@ -376,43 +497,58 @@ JS;
 						</tr>
 
 						<tr>
-							<th scope="row">Duration</th>
-							<td>
-								<select name="duration">
-									<option value="once">Once</option>
-									<option value="forever">Forever</option>
-									<option value="repeating">Multiple months</option>
-								</select>
-								<input type="number" min="1" step="1" name="duration_months" placeholder="# months (if repeating)" />
-							</td>
-						</tr>
-						<tr>
 							<th scope="row"><label for="scbg_usage_limit">Usage limit per code</label></th>
 							<td>
 								<input type="number" id="scbg_usage_limit" name="usage_limit" min="1" step="1" value="1" />
 							</td>
 						</tr>
-						<tr>
+
+						<tr id="scbg_promo_options_row">
+							<th scope="row">Promotion options (applies to each code)</th>
+							<td>
+								<label><input type="checkbox" name="promo_enabled" value="1" checked /> Enabled</label>
+								&nbsp;&nbsp;
+								<label>Starts at (UTC) <input type="datetime-local" name="promo_starts_at" /></label>
+								&nbsp;&nbsp;
+								<label>Ends at (UTC) <input type="datetime-local" name="promo_ends_at" /></label>
+								<p class="description">Optional. If set, each created promotion will include these settings.</p>
+							</td>
+						</tr>
+
+						<tr class="scbg-new-coupon-row">
+							<th scope="row">Duration</th>
+							<td>
+								<select name="duration" class="scbg-new-coupon-only">
+									<option value="once">Once</option>
+									<option value="forever">Forever</option>
+									<option value="repeating">Multiple months</option>
+								</select>
+								<input type="number" min="1" step="1" name="duration_months" class="scbg-new-coupon-only" placeholder="# months (if repeating)" />
+							</td>
+						</tr>
+						<tr class="scbg-new-coupon-row">
 							<th scope="row"><label for="scbg_usage_per_customer">Usage limit per customer</label></th>
 							<td>
-								<input type="number" id="scbg_usage_per_customer" name="usage_per_customer" min="1" step="1" value="1" />
+								<input type="number" id="scbg_usage_per_customer" name="usage_per_customer" min="1" step="1" value="1" class="scbg-new-coupon-only" />
 							</td>
 						</tr>
-						<tr>
+						<tr class="scbg-new-coupon-row">
 							<th scope="row"><label for="scbg_min_subtotal">Minimum order subtotal (optional)</label></th>
 							<td>
-								<input type="text" id="scbg_min_subtotal" name="min_subtotal" class="regular-text" placeholder="e.g. 0.00" />
+								<input type="text" id="scbg_min_subtotal" name="min_subtotal" class="regular-text scbg-new-coupon-only" placeholder="e.g. 0.00" />
 							</td>
 						</tr>
-						<tr>
+						<tr class="scbg-new-coupon-row">
 							<th scope="row"><label for="scbg_end_date">Coupon end date (UTC, optional)</label></th>
 							<td>
-								<input type="datetime-local" id="scbg_end_date" name="end_date" />
+								<input type="datetime-local" id="scbg_end_date" name="end_date" class="scbg-new-coupon-only" />
 								<p class="description">Sets the coupon’s <code>redeem_by</code> (UTC).</p>
 							</td>
 						</tr>
+
 					</tbody>
 				</table>
+
 				<!-- Export mode -->
 				<p>
 					<label for="sc_export_mode"><strong>Export mode</strong></label><br>
@@ -423,7 +559,7 @@ JS;
 					</select>
 				</p>
 				<p>
-					<button type="submit" name="scbg_action" value="generate" class="button button-primary">Generate Coupon + Codes & CSV</button>
+					<button type="submit" name="scbg_action" value="generate" class="button button-primary">Generate Codes &amp; CSV</button>
 				</p>
 			</form>
 
@@ -476,7 +612,7 @@ JS;
 			exit;
 		}
 
-		// Generate coupon + promotion codes.
+		// Generate coupon and/or promotion codes.
 		if ( isset( $_POST['scbg_action'] ) && 'generate' === $_POST['scbg_action'] ) {
 			check_admin_referer( 'scbg_generate', 'scbg_nonce_generate' );
 
@@ -485,30 +621,23 @@ JS;
 				wp_die( esc_html__( 'Please save your SureCart API token first.', 'scbg' ) );
 			}
 
-			$campaign = isset( $_POST['campaign'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign'] ) ) : '';
+			// Common inputs
+			$mode_coupon        = isset($_POST['coupon_mode']) ? sanitize_text_field( wp_unslash($_POST['coupon_mode']) ) : 'new';
+			$use_existing       = ( $mode_coupon === 'existing' );
+			$existing_coupon_id = isset($_POST['coupon_id']) ? sanitize_text_field( wp_unslash($_POST['coupon_id']) ) : '';
 
-			// Read Product IDs from multi-select (no manual typing)
-			$raw_product_ids = isset( $_POST['product_ids'] ) ? (array) $_POST['product_ids'] : [];
-			$product_ids     = array_values( array_unique( array_filter( array_map( function( $id ) {
-				$id = sanitize_text_field( wp_unslash( $id ) );
-				// allow letters, digits, underscore, hyphen
-				return preg_replace( '/[^A-Za-z0-9_-]/', '', $id );
-			}, $raw_product_ids ) ) ) );
+			$campaign           = isset( $_POST['campaign'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign'] ) ) : '';
 
-			$discount_type       = isset( $_POST['discount_type'] ) ? sanitize_text_field( wp_unslash( $_POST['discount_type'] ) ) : 'percent';
-			$discount_value_raw  = isset( $_POST['discount_value'] ) ? trim( wp_unslash( $_POST['discount_value'] ) ) : '';
-			$currency            = isset( $_POST['currency'] ) ? strtolower( sanitize_text_field( wp_unslash( $_POST['currency'] ) ) ) : '';
-
-			$count               = isset( $_POST['count'] ) ? max( 1, min( 1000, absint( $_POST['count'] ) ) ) : 1;
+			$count              = isset( $_POST['count'] ) ? max( 1, min( 1000, absint( $_POST['count'] ) ) ) : 1;
 
 			// Accept lower/upper case, keep hyphen/underscore; store uppercase.
-			$prefix_raw          = isset( $_POST['prefix'] ) ? wp_unslash( $_POST['prefix'] ) : '';
-			$prefix              = strtoupper( preg_replace( '/[^A-Za-z0-9\-\_]/', '', $prefix_raw ) );
+			$prefix_raw         = isset( $_POST['prefix'] ) ? wp_unslash( $_POST['prefix'] ) : '';
+			$prefix             = strtoupper( preg_replace( '/[^A-Za-z0-9\-\_]/', '', $prefix_raw ) );
 
 			// Pattern + grouping
-			$pattern             = isset( $_POST['code_pattern'] ) ? sanitize_text_field( wp_unslash( $_POST['code_pattern'] ) ) : 'readable';
-			$sep_raw             = isset( $_POST['code_group_sep'] ) ? wp_unslash( $_POST['code_group_sep'] ) : '-';
-			$group_sep           = substr( $sep_raw, 0, 1 );
+			$pattern            = isset( $_POST['code_pattern'] ) ? sanitize_text_field( wp_unslash( $_POST['code_pattern'] ) ) : 'readable';
+			$sep_raw            = isset( $_POST['code_group_sep'] ) ? wp_unslash( $_POST['code_group_sep'] ) : '-';
+			$group_sep          = substr( $sep_raw, 0, 1 );
 			if ( ! preg_match( '/^[A-Za-z0-9\-\_\.]$/', $group_sep ) ) { $group_sep = '-'; }
 
 			$groups = [];
@@ -517,75 +646,106 @@ JS;
 				$val = isset( $_POST[ $key ] ) ? absint( $_POST[ $key ] ) : ( $g === 1 ? 8 : 0 );
 				if ( $val > 0 ) { $groups[] = $val; }
 			}
-			if ( empty( $groups ) ) { $groups = [ 8 ]; }               // default
+			if ( empty( $groups ) ) { $groups = [ 8 ]; }
 			$total_len = array_sum( $groups );
-			if ( $total_len > 32 ) {                                    // hard cap
+			if ( $total_len > 32 ) {
 				$trimmed = [];
 				$running = 0;
 				foreach ( $groups as $size ) {
-					if ( $running + $size > 32 ) {
-						$size = max( 0, 32 - $running );
-					}
-					if ( $size > 0 ) {
-						$trimmed[] = $size;
-						$running  += $size;
-					}
+					if ( $running + $size > 32 ) { $size = max( 0, 32 - $running ); }
+					if ( $size > 0 ) { $trimmed[] = $size; $running += $size; }
 					if ( $running >= 32 ) { break; }
 				}
 				$groups = $trimmed;
 			}
 
-			$duration            = isset( $_POST['duration'] ) ? sanitize_text_field( wp_unslash( $_POST['duration'] ) ) : 'once';
-			$duration_months     = isset( $_POST['duration_months'] ) ? absint( $_POST['duration_months'] ) : 0;
-			$usage_limit         = isset( $_POST['usage_limit'] ) ? max( 1, absint( $_POST['usage_limit'] ) ) : 1;
-			$usage_per_customer  = isset( $_POST['usage_per_customer'] ) ? max( 1, absint( $_POST['usage_per_customer'] ) ) : 1;
-			$min_subtotal_raw    = isset( $_POST['min_subtotal'] ) ? trim( wp_unslash( $_POST['min_subtotal'] ) ) : '';
-			$end_date_raw        = isset( $_POST['end_date'] ) ? sanitize_text_field( wp_unslash( $_POST['end_date'] ) ) : '';
+			$usage_limit        = isset( $_POST['usage_limit'] ) ? max( 1, absint( $_POST['usage_limit'] ) ) : 1;
 
-			// Normalize amounts.
-			if ( 'percent' === $discount_type ) {
-				$percent_off = (int) round( floatval( $discount_value_raw ) );
-				if ( $percent_off < 1 || $percent_off > 100 ) {
-					wp_die( esc_html__( 'Percent must be between 1 and 100.', 'scbg' ) );
+			// Promotion options
+			$promo_enabled      = ! empty( $_POST['promo_enabled'] );
+			$promo_starts_raw   = isset( $_POST['promo_starts_at'] ) ? sanitize_text_field( wp_unslash( $_POST['promo_starts_at'] ) ) : '';
+			$promo_ends_raw     = isset( $_POST['promo_ends_at'] ) ? sanitize_text_field( wp_unslash( $_POST['promo_ends_at'] ) ) : '';
+			$promo_starts_at    = $promo_starts_raw ? (int) strtotime( $promo_starts_raw . ' UTC' ) : null;
+			$promo_ends_at      = $promo_ends_raw   ? (int) strtotime( $promo_ends_raw   . ' UTC' ) : null;
+			if ( $promo_starts_at && $promo_ends_at && $promo_ends_at <= $promo_starts_at ) {
+				wp_die( esc_html__( 'Promotion "Ends at" must be after "Starts at".', 'scbg' ) );
+			}
+
+			// If existing coupon mode, validate and set coupon_id; otherwise build a new coupon payload.
+			if ( $use_existing ) {
+				if ( empty( $existing_coupon_id ) ) {
+					wp_die( esc_html__( 'Please select an existing coupon or switch back to “Create new coupon”.', 'scbg' ) );
 				}
-				$amount_off_cents = null;
+				$coupon_id = $existing_coupon_id;
+
+				// Ignore new-coupon-only fields.
+				$percent_off = $amount_off_cents = $min_subtotal_cents = $coupon_redeem_by = $duration_months = null;
+				$currency = '';
+				$duration = 'once';
+				$usage_per_customer = 1;
+
 			} else {
-				$amount = floatval( $discount_value_raw );
-				$amount_off_cents = (int) round( $amount * 100 );
-				$percent_off = null;
-				if ( empty( $currency ) ) {
-					wp_die( esc_html__( 'Currency is required for fixed amount discounts.', 'scbg' ) );
+				// Gather new-coupon-only inputs
+				$raw_product_ids = isset( $_POST['product_ids'] ) ? (array) $_POST['product_ids'] : [];
+				$product_ids     = array_values( array_unique( array_filter( array_map( function( $id ) {
+					$id = sanitize_text_field( wp_unslash( $id ) );
+					return preg_replace( '/[^A-Za-z0-9_-]/', '', $id );
+				}, $raw_product_ids ) ) ) );
+
+				$discount_type      = isset( $_POST['discount_type'] ) ? sanitize_text_field( wp_unslash( $_POST['discount_type'] ) ) : 'percent';
+				$discount_value_raw = isset( $_POST['discount_value'] ) ? trim( wp_unslash( $_POST['discount_value'] ) ) : '';
+				$currency           = isset( $_POST['currency'] ) ? strtolower( sanitize_text_field( wp_unslash( $_POST['currency'] ) ) ) : '';
+
+				$duration           = isset( $_POST['duration'] ) ? sanitize_text_field( wp_unslash( $_POST['duration'] ) ) : 'once';
+				$duration_months    = isset( $_POST['duration_months'] ) ? absint( $_POST['duration_months'] ) : 0;
+				$usage_per_customer = isset( $_POST['usage_per_customer'] ) ? max( 1, absint( $_POST['usage_per_customer'] ) ) : 1;
+				$min_subtotal_raw   = isset( $_POST['min_subtotal'] ) ? trim( wp_unslash( $_POST['min_subtotal'] ) ) : '';
+				$end_date_raw       = isset( $_POST['end_date'] ) ? sanitize_text_field( wp_unslash( $_POST['end_date'] ) ) : '';
+
+				// Normalize amounts.
+				if ( 'percent' === $discount_type ) {
+					$percent_off = (int) round( floatval( $discount_value_raw ) );
+					if ( $percent_off < 1 || $percent_off > 100 ) {
+						wp_die( esc_html__( 'Percent must be between 1 and 100.', 'scbg' ) );
+					}
+					$amount_off_cents = null;
+				} else {
+					$amount = floatval( $discount_value_raw );
+					$amount_off_cents = (int) round( $amount * 100 );
+					$percent_off = null;
+					if ( empty( $currency ) ) {
+						wp_die( esc_html__( 'Currency is required for fixed amount discounts.', 'scbg' ) );
+					}
 				}
+
+				$min_subtotal_cents = '' !== $min_subtotal_raw ? (int) round( floatval( $min_subtotal_raw ) * 100 ) : null;
+				$coupon_redeem_by   = '' !== $end_date_raw ? (int) strtotime( $end_date_raw . ' UTC' ) : null;
+
+				// Create the COUPON (one per run)
+				$coupon_payload = [
+					'name'               => $campaign ?: ( 'Bulk ' . gmdate( 'Y-m-d H:i:s' ) ),
+					'percent_off'        => $percent_off,
+					'amount_off'         => $amount_off_cents,
+					'currency'           => $amount_off_cents ? $currency : null,
+					'duration'           => $duration,
+					'duration_in_months' => ( 'repeating' === $duration && $duration_months > 0 ) ? $duration_months : null,
+					'max_redemptions_per_customer' => $usage_per_customer,
+					'product_ids'        => ! empty( $product_ids ) ? $product_ids : null,
+					'redeem_by'          => $coupon_redeem_by,
+				];
+				$coupon_payload = array_filter( $coupon_payload, static function( $v ) { return ! is_null( $v ); } );
+
+				$coupon = $this->api_post( 'https://api.surecart.com/v1/coupons', $coupon_payload, $api_key );
+				if ( is_wp_error( $coupon ) ) {
+					wp_die( esc_html( 'Failed to create coupon: ' . $coupon->get_error_message() ) );
+				}
+				$coupon_id = isset( $coupon['id'] ) ? $coupon['id'] : '';
 			}
 
-			$min_subtotal_cents = '' !== $min_subtotal_raw ? (int) round( floatval( $min_subtotal_raw ) * 100 ) : null;
-			$coupon_redeem_by   = '' !== $end_date_raw ? (int) strtotime( $end_date_raw . ' UTC' ) : null;
-
-			// 1) Create the COUPON (one per campaign)
-			$coupon_payload = [
-				'name'               => $campaign ?: ( 'Bulk ' . gmdate( 'Y-m-d H:i:s' ) ),
-				'percent_off'        => $percent_off,
-				'amount_off'         => $amount_off_cents,
-				'currency'           => $amount_off_cents ? $currency : null,
-				'duration'           => $duration,
-				'duration_in_months' => ( 'repeating' === $duration && $duration_months > 0 ) ? $duration_months : null,
-				'max_redemptions_per_customer' => $usage_per_customer,
-				'product_ids'        => ! empty( $product_ids ) ? $product_ids : null,
-				'redeem_by'          => $coupon_redeem_by, // coupon end date
-			];
-			$coupon_payload = array_filter( $coupon_payload, static function( $v ) { return ! is_null( $v ); } );
-
-			$coupon = $this->api_post( 'https://api.surecart.com/v1/coupons', $coupon_payload, $api_key );
-			if ( is_wp_error( $coupon ) ) {
-				wp_die( esc_html( 'Failed to create coupon: ' . $coupon->get_error_message() ) );
-			}
-			$coupon_id = isset( $coupon['id'] ) ? $coupon['id'] : '';
-
-			// === NEW: Export mode from POST ===
+			// === Export mode from POST ===
 			$mode = isset( $_POST['sc_export_mode'] )
 			    ? sanitize_text_field( wp_unslash( $_POST['sc_export_mode'] ) )
 			    : 'full';
-
 			$mode = in_array( $mode, array( 'full', 'codes', 'both' ), true ) ? $mode : 'full';
 
 			// Prepare uploads info.
@@ -610,7 +770,7 @@ JS;
 			    if ( ! $fh_full ) {
 			        wp_die( esc_html__( 'Could not create full CSV file in uploads.', 'scbg' ) );
 			    }
-			    // Header row matches your existing format.
+			    // Header row
 			    fputcsv( $fh_full, array( 'campaign', 'code', 'type', 'value', 'currency', 'coupon_id', 'promotion_id' ) );
 			}
 
@@ -625,7 +785,6 @@ JS;
 			        if ( $fh_full ) { fclose( $fh_full ); }
 			        wp_die( esc_html__( 'Could not create codes CSV file in uploads.', 'scbg' ) );
 			    }
-			    // Single column header.
 			    fputcsv( $fh_codes, array( 'code' ) );
 			}
 
@@ -639,6 +798,9 @@ JS;
 			        'coupon_id'       => $coupon_id,
 			        'code'            => $code,
 			        'max_redemptions' => $usage_limit,
+			        'active'          => $promo_enabled,
+			        'starts_at'       => $promo_starts_at,
+			        'ends_at'         => $promo_ends_at,
 			    );
 			    $promotion_payload = array_filter( $promotion_payload, static function( $v ) { return ! is_null( $v ); } );
 
@@ -656,9 +818,9 @@ JS;
 			            array(
 			                $campaign,
 			                $code,
-			                $discount_type,
-			                ( 'percent' === $discount_type ? $percent_off : ( $amount_off_cents / 100 ) ),
-			                $currency,
+			                ( isset($percent_off) && !is_null($percent_off) ? 'percent' : 'amount' ),
+			                ( isset($percent_off) && !is_null($percent_off) ? $percent_off : ( isset($amount_off_cents) ? ($amount_off_cents / 100) : '' ) ),
+			                ( isset($currency) ? $currency : '' ),
 			                $coupon_id,
 			                $promotion_id,
 			            )
@@ -679,23 +841,21 @@ JS;
 
 			// Build message + redirect with up to two links.
 			$msg = sprintf(
-			    'Created coupon "%s" and %d promotion codes%s.',
-			    $campaign ?: 'Bulk',
+			    'Created %d promotion code%s%s.',
 			    $created,
+			    $created === 1 ? '' : 's',
 			    $errors ? sprintf( ' (%d errors)', $errors ) : ''
 			);
 
-			// Keep backward compatibility: always pass scbg_msg.
-			// Pass separate params for each CSV that exists.
 			$query = array(
 			    'page'     => self::PAGE_SLUG,
 			    'scbg_msg' => rawurlencode( $msg ),
 			);
 
-			if ( $csv_url_full ) {
+			if ( ! empty( $csv_url_full ) ) {
 			    $query['scbg_csv_full'] = rawurlencode( $csv_url_full );
 			}
-			if ( $csv_url_codes ) {
+			if ( ! empty( $csv_url_codes ) ) {
 			    $query['scbg_csv_codes'] = rawurlencode( $csv_url_codes );
 			}
 
@@ -810,28 +970,22 @@ new RUP_SCBG_Bulk_Coupon_Generator();
 //  Updater bootstrap (plugins_loaded priority 1):
 // ──────────────────────────────────────────────────────────────────────────
 add_action( 'plugins_loaded', function() {
-    // 1) Load our universal drop-in. Because that file begins with "namespace UUPD\V1;",
-    //    both the class and the helper live under UUPD\V1.
     require_once __DIR__ . '/inc/updater.php';
-
-    // 2) Build a single $updater_config array:
     $updater_config = [
-        'plugin_file' => plugin_basename(__FILE__),             // e.g. "simply-static-export-notify/simply-static-export-notify.php"
-        'slug'        => RUP_SC_SC_BULK_COUPONS_SLUG,           // must match your updater‐server slug
-        'name'        => 'SureCart Bulk Coupons',               // human‐readable plugin name
-        'version'     => RUP_SC_SC_BULK_COUPONS_VERSION,        // same as the VERSION constant above
-        'key'         => '',                                    // your secret key for private updater
+        'plugin_file' => plugin_basename(__FILE__),
+        'slug'        => RUP_SC_SC_BULK_COUPONS_SLUG,
+        'name'        => 'SureCart Bulk Coupons',
+        'version'     => RUP_SC_SC_BULK_COUPONS_VERSION,
+        'key'         => '',
         'server'      => 'https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/index.json',
     ];
-
-    // 3) Call the helper in the UUPD\V1 namespace:
     \RUP\Updater\Updater_V1::register( $updater_config );
 }, 20 );
 
 // MainWP Icon Filter
 add_filter('mainwp_child_stats_get_plugin_info', function($info, $slug) {
     if ('sc-bulk-coupons/sc-bulk-coupons.php' === $slug) {
-        $info['icon'] = 'https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/icon-128.png'; // Supported types: jpeg, jpg, gif, ico, png
+        $info['icon'] = 'https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/icon-128.png';
     }
     return $info;
 }, 10, 2);
