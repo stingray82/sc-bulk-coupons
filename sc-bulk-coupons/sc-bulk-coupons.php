@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       SureCart Bulk Coupons
  * Description:       Generate bulk SureCart coupons & promotion codes — or attach codes to an existing coupon.
- * Tested up to:      6.8.2
+ * Tested up to:      6.9
  * Requires at least: 6.5
  * Requires PHP:      8.0
  * Version:           1.3.0

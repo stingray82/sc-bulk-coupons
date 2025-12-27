@@ -14,3 +14,9 @@ SureCart Bulk Coupon Generator - Generate Coupons in Bulk for SureCart
 
 = How do I add use the plugin? =
 Navigate to tools and surecart bulk coupons and fill out the required fields 
+
+
+
+
+
+
