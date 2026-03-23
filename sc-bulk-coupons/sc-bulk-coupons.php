@@ -2,10 +2,10 @@
 /**
  * Plugin Name:       SureCart Bulk Coupons
  * Description:       Generate bulk SureCart coupons & promotion codes — or attach codes to an existing coupon.
- * Tested up to:      6.9
+ * Tested up to:      6.9.4
  * Requires at least: 6.5
  * Requires PHP:      8.0
- * Version:           1.3.0
+ * Version:           1.3.1
  * Author:            reallyusefulplugins.com
  * Author URI:        https://reallyusefulplugins.com
  * License:           GPL2
@@ -17,7 +17,7 @@
 if ( ! defined('ABSPATH') ) { exit; }
 
 // Define plugin constants
-define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.3.0');
+define('RUP_SC_SC_BULK_COUPONS_VERSION', '1.3.1');
 define('RUP_SC_SC_BULK_COUPONS_SLUG', 'sc-bulk-coupons');
 define('RUP_SC_SC_BULK_COUPONS_MAIN_FILE', __FILE__);
 define('RUP_SC_SC_BULK_COUPONS_DIR', plugin_dir_path(__FILE__));
@@ -967,11 +967,12 @@ JS;
 new RUP_SCBG_Bulk_Coupon_Generator();
 
 // ──────────────────────────────────────────────────────────────────────────
-//  Updater bootstrap (plugins_loaded priority 1):
+//  Updater bootstrap (plugins_loaded priority 20):
 // ──────────────────────────────────────────────────────────────────────────
 add_action( 'plugins_loaded', function() {
     require_once __DIR__ . '/inc/updater.php';
     $updater_config = [
+    	'vendor'      => 'RUP',
         'plugin_file' => plugin_basename(__FILE__),
         'slug'        => RUP_SC_SC_BULK_COUPONS_SLUG,
         'name'        => 'SureCart Bulk Coupons',
@@ -979,7 +980,7 @@ add_action( 'plugins_loaded', function() {
         'key'         => '',
         'server'      => 'https://raw.githubusercontent.com/stingray82/sc-bulk-coupons/main/uupd/index.json',
     ];
-    \RUP\Updater\Updater_V1::register( $updater_config );
+    \RUP\Updater\Updater_V2::register( $updater_config );
 }, 20 );
 
 // MainWP Icon Filter

@@ -3,8 +3,8 @@ Contributors: reallyusefulplugins
 Donate link: https://reallyusefulplugins.com/donate
 Tags: Bulk Coupons, Sure Cart, Coupons
 Requires at least: 6.5
-Tested up to: 6.8.3
-Stable tag: 1.2
+Tested up to: 6.9
+Stable tag: 1.3.0
 Requires PHP: 8.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -26,10 +26,19 @@ SureCart Bulk Coupon Generator - Generate Coupons in Bulk for SureCart
 = How do I add use the plugin? =
 Navigate to tools and surecart bulk coupons and fill out the required fields 
 
+
+
+
+
+
+
 == Changelog ==
+= 1.3 December 2025 =
+New: Ability to Add Coupons to an Existing Campaign
+
 = 1.2 October 2025 =
-New Product Selector updates
-New CSV output, Coupons Only or Both and original full
+New: Product Selector updates
+New: CSV output, Coupons Only or Both and original full
 
 = 1.1.1 September 2025 =
 Fixed: Minimum Order Subtotal

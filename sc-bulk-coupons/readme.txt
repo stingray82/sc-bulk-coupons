@@ -3,8 +3,8 @@ Contributors: reallyusefulplugins
 Donate link: https://reallyusefulplugins.com/donate
 Tags: Bulk Coupons, Sure Cart, Coupons
 Requires at least: 6.5
-Tested up to: 6.9
-Stable tag: 1.3.0
+Tested up to: 6.9.4
+Stable tag: 1.3.1
 Requires PHP: 8.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -33,6 +33,10 @@ Navigate to tools and surecart bulk coupons and fill out the required fields
 
 
 == Changelog ==
+= 1.3.1 23 March 2026 =
+Update: Updater to 2.0-Alpha
+Update: Compatibility
+
 = 1.3 December 2025 =
 New: Ability to Add Coupons to an Existing Campaign
 
