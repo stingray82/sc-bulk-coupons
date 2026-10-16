@@ -1,13 +1,9 @@
 === SureCart Bulk Coupons Generator ===
-Contributors: reallyusefulplugins
-Donate link: https://reallyusefulplugins.com/donate
 Tags: Bulk Coupons, Sure Cart, Coupons
 Requires at least: 6.5
-Tested up to: 7.0.2
-Stable tag: 1.3.2
+Tested up to: 7.1.3
+Stable tag: 1.3.3
 Requires PHP: 8.0
-License: GPL-2.0-or-later
-License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 SureCart Bulk Coupon Generator - Generate Coupons in Bulk for SureCart
 
@@ -33,6 +29,10 @@ Navigate to tools and surecart bulk coupons and fill out the required fields
 
 
 == Changelog ==
+= 1.3.3 16 October 2026 =
+Updated: UUPD Dependency Updated to Version 2.1 Stable
+Updated: Deploy Methodology
+
 = 1.3.2 24 July 2026 =
 Updated: UUPD Dependency Updated to Version 2.0 Stable
 
